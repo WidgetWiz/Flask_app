@@ -1,23 +1,20 @@
+
 from flask import Flask, render_template, request, send_file, flash
 import pandas as pd
 import zipfile
 import os
+from io import BytesIO
 
 app = Flask(__name__)
-app.secret_key = 'your_secret_key'  
+app.secret_key = 'your_secret_key'
 
 # Ensure the output directory exists
 output_folder = 'output'
 os.makedirs(output_folder, exist_ok=True)
 
-required_columns = ['id', 'address']
-
-# Function to validate columns
+# Function to validate columns - no specific required columns now
 def validate_columns(df, dataset_name):
     df.columns = df.columns.str.strip().str.lower()
-    missing_columns = [col for col in required_columns if col not in df.columns]
-    if missing_columns:
-        raise ValueError(f"The following required columns are missing from {dataset_name}: {', '.join(missing_columns)}")
     return df
 
 @app.route('/')
@@ -28,8 +25,12 @@ def upload_form():
 def process():
     try:
         # Get uploaded files
-        file1 = request.files['file1']
-        file2 = request.files['file2']
+        file1 = request.files.get('file1')
+        file2 = request.files.get('file2')
+        
+        if not file1 or not file2:
+            flash("Please upload both CSV files to proceed.")
+            return render_template('upload.html')
 
         # Read and validate columns in the datasets
         df1 = pd.read_csv(file1)
@@ -37,30 +38,22 @@ def process():
         df1 = validate_columns(df1, 'Dataset 1')
         df2 = validate_columns(df2, 'Dataset 2')
 
-        # Process datasets
-        df1 = df1[required_columns].drop_duplicates()
-        df2 = df2[required_columns].drop_duplicates()
-        common_rows = pd.merge(df1, df2, on=required_columns)
+        # Process datasets - retain all columns and drop duplicates based on all columns
+        common_rows = pd.merge(df1, df2, how='inner')
         unique_df1 = pd.concat([df1, common_rows]).drop_duplicates(keep=False)
         unique_df2 = pd.concat([df2, common_rows]).drop_duplicates(keep=False)
 
-        # Save results to CSV files
-        common_path = os.path.join(output_folder, 'common_rows.csv')
-        unique1_path = os.path.join(output_folder, 'unique_in_df1.csv')
-        unique2_path = os.path.join(output_folder, 'unique_in_df2.csv')
-        common_rows.to_csv(common_path, index=False)
-        unique_df1.to_csv(unique1_path, index=False)
-        unique_df2.to_csv(unique2_path, index=False)
-
-        # Zip the CSV files
-        zip_path = os.path.join(output_folder, 'output_datasets.zip')
-        with zipfile.ZipFile(zip_path, 'w') as zipf:
-            zipf.write(common_path, 'common_rows.csv')
-            zipf.write(unique1_path, 'unique_in_df1.csv')
-            zipf.write(unique2_path, 'unique_in_df2.csv')
+        # Create a zip file in memory
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.writestr("common_rows.csv", common_rows.to_csv(index=False))
+            zipf.writestr("unique_in_df1.csv", unique_df1.to_csv(index=False))
+            zipf.writestr("unique_in_df2.csv", unique_df2.to_csv(index=False))
+        
+        zip_buffer.seek(0)  # Reset buffer position to the beginning
 
         flash("Processing complete! Your files are ready for download.")
-        return send_file(zip_path, as_attachment=True)
+        return send_file(zip_buffer, as_attachment=True, download_name="output_datasets.zip")
 
     except ValueError as e:
         return render_template('error.html', message=str(e))
